@@ -1,0 +1,13 @@
+{
+    "board_id": 4880,
+    "magic": "PX4FWv1",
+    "description": "Firmware for the NXP FRDM-IMX8MPLUS Cortex-M7",
+    "image": "",
+    "build_time": 0,
+    "summary": "FRDM-IMX8MP-M7",
+    "version": "0.1",
+    "image_size": 0,
+    "image_maxsize": 7340032,
+    "git_identity": "",
+    "board_revision": 0
+}

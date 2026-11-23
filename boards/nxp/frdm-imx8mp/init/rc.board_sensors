@@ -1,0 +1,6 @@
+#!/bin/sh
+#
+# NXP FRDM-IMX8MPLUS Cortex-M7 specific board sensors init
+#------------------------------------------------------------------------------
+# No sensors on the board's M7 side yet (IMU/baro/mag would go on I2C/SPI of the
+# 40-pin header J18 or J27).

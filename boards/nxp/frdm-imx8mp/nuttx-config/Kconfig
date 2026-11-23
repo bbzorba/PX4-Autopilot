@@ -1,0 +1,45 @@
+#
+# NXP FRDM-IMX8MPLUS, Cortex-M7 (PX4 board nxp/frdm-imx8mp)
+# Chip options: NuttX arch/arm/src/mx8mp/Kconfig (in-tree since NuttX 12.x).
+#
+
+config BOARD_FRDM_IMX8MP_WDOG3
+	bool "Arm WDOG3 (M7-only watchdog)"
+	default y
+	---help---
+		Arm WDOG3 in board_app_initialize() and feed it from the high-priority work queue.
+		On timeout it resets only the M7 (SRC_M7RCR.WDOG3_RST_OPTION = 0); Linux on the
+		Cortex-A53s keeps running.
+
+config BOARD_FRDM_IMX8MP_WDOG3_TIMEOUT_MS
+	int "WDOG3 timeout (ms)"
+	default 2000
+	range 500 128000
+	depends on BOARD_FRDM_IMX8MP_WDOG3
+
+config BOARD_FRDM_IMX8MP_RPMSG_TTY
+	bool "RPMsg serial port to the Cortex-A53 (Linux imx_rpmsg_tty)"
+	default y
+	depends on MX8MP_RPMSG
+	select SERIAL_RXDMA
+	select SERIAL_TXDMA
+	---help---
+		Raw RPMsg serial device compatible with NXP's Linux imx_rpmsg_tty
+		driver (name service "rpmsg-virtual-tty-channel" -> /dev/ttyRPMSG<n>
+		on the A53).  Registered on the M7 as BOARD_FRDM_IMX8MP_RPMSG_TTY_PATH.
+
+if BOARD_FRDM_IMX8MP_RPMSG_TTY
+
+config BOARD_FRDM_IMX8MP_RPMSG_TTY_PATH
+	string "NuttX device path"
+	default "/dev/ttyRPMSG0"
+
+config BOARD_FRDM_IMX8MP_RPMSG_TTY_EPT
+	string "RPMsg endpoint / name-service name"
+	default "rpmsg-virtual-tty-channel"
+
+config BOARD_FRDM_IMX8MP_RPMSG_TTY_BUFSIZE
+	int "RX/TX ring buffer size"
+	default 4096
+
+endif

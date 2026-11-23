@@ -1,0 +1,8 @@
+#!/bin/sh
+#
+# NXP FRDM-IMX8MPLUS Cortex-M7 specific board defaults
+#------------------------------------------------------------------------------
+
+# No sensors yet: run the SIH simulator for bench tests (quadrotor x)
+param set-default SYS_AUTOSTART 1100
+param set-default SYS_HITL 2
