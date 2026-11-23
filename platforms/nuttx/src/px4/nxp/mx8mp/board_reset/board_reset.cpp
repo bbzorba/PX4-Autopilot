@@ -37,11 +37,34 @@
 #include <nuttx/board.h>
 #include <arm_internal.h>
 
+/* On the i.MX 8M Plus the M7's SYSRESETREQ (up_systemreset) resets the whole
+ * SoC, Linux on the A53s included. Reset only the M7 instead, through its own
+ * watchdog WDOG3: SRC_M7RCR.WDOG3_RST_OPTION = 0 (reset default) routes a
+ * WDOG3 reset to the M7 only. */
+
+#define WDOG3_BASE 0x302A0000u
+#define WDOG3_WCR  (*(volatile uint16_t *)(WDOG3_BASE + 0x0))
+#define CCM_WDOG_ROOT_SET  (*(volatile uint32_t *)(0x30380000u + 0xb900u + 4u))
+#define CCM_WDOG3_GATE_SET (*(volatile uint32_t *)(0x30380000u + 0x4550u + 4u))
+
+static void mx8mp_m7_reset(void)
+{
+	CCM_WDOG_ROOT_SET = 1u << 28;   /* wdog clock root on */
+	CCM_WDOG3_GATE_SET = 3u << 4;   /* WDOG3 gate on for the M7 domain */
+
+	/* Shortest timeout (0.5 s), WDA | WDE; SRS = 0 asserts the software
+	 * reset right away. Whichever comes first resets the M7. */
+	WDOG3_WCR = (uint16_t)((0u << 8) | (1u << 5) | (1u << 2));
+
+	for (;;) {
+	}
+}
+
 int board_reset(int status)
 {
 #if defined(BOARD_HAS_ON_RESET)
 	board_on_reset(status);
 #endif
-	up_systemreset();
+	mx8mp_m7_reset();
 	return 0;
 }

@@ -58,9 +58,12 @@
 
 #include <errno.h>
 #include <string.h>
+#include <sys/param.h>
 #include <syslog.h>
 
+#include <nuttx/clock.h>
 #include <nuttx/kmalloc.h>
+#include <nuttx/wqueue.h>
 #include <nuttx/rpmsg/rpmsg.h>
 #include <nuttx/serial/serial.h>
 
@@ -77,7 +80,20 @@ struct rpmsg_tty_priv_s {
 	const uint8_t *rx_data;   /* valid only inside the endpoint callback */
 	size_t rx_len;
 	bool greeting_seen;
+	struct work_s retry_work; /* resend once Linux returns TX buffers */
 };
+
+#define RPMSG_TTY_RETRY_TICKS MAX(1, MSEC2TICK(2))
+
+static void rpmsg_tty_dmatxavail(struct uart_dev_s *dev);
+
+static void rpmsg_tty_retry(void *arg)
+{
+	struct uart_dev_s *dev = arg;
+	irqstate_t flags = enter_critical_section();
+	rpmsg_tty_dmatxavail(dev);
+	leave_critical_section(flags);
+}
 
 static int  rpmsg_tty_setup(struct uart_dev_s *dev) { return OK; }
 static void rpmsg_tty_shutdown(struct uart_dev_s *dev) {}
@@ -103,11 +119,20 @@ static void rpmsg_tty_dmasend(struct uart_dev_s *dev)
 
 	if (is_rpmsg_ept_ready(&priv->ept)) {
 		uint32_t space;
-		uint8_t *buf = rpmsg_get_tx_payload_buffer(&priv->ept, &space, true);
+		/* Never block here: this runs inside the serial driver's critical
+		 * section (and OpenAMP asserts after a 15 s wait). Without a free
+		 * buffer the bytes stay in the ring and a work item retries, like a
+		 * UART waiting for its TX FIFO to drain. */
+		uint8_t *buf = rpmsg_get_tx_payload_buffer(&priv->ept, &space, false);
 
 		if (buf == NULL) {
 			xfer->nbytes = 0;
 			uart_xmitchars_done(dev);
+
+			if (work_available(&priv->retry_work)) {
+				work_queue(HPWORK, &priv->retry_work, rpmsg_tty_retry, dev, RPMSG_TTY_RETRY_TICKS);
+			}
+
 			return;
 		}
 
@@ -147,8 +172,14 @@ static void rpmsg_tty_dmatxavail(struct uart_dev_s *dev)
 		uart_xmitchars_dma(dev);
 
 		if (dev->xmit.tail == tail) {
-			break; /* nothing was consumed */
+			break; /* nothing was consumed (a retry is queued) */
 		}
+	}
+
+	struct rpmsg_tty_priv_s *priv = dev->priv;
+
+	if (dev->xmit.head != dev->xmit.tail && work_available(&priv->retry_work)) {
+		work_queue(HPWORK, &priv->retry_work, rpmsg_tty_retry, dev, RPMSG_TTY_RETRY_TICKS);
 	}
 }
 

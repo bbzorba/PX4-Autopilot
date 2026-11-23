@@ -31,6 +31,8 @@
 
 #include <nuttx/config.h>
 #include <nuttx/board.h>
+#include <nuttx/irq.h>
+#include <arch/irq.h>
 #include <nuttx/wqueue.h>
 #include <nuttx/clock.h>
 #include <syslog.h>
@@ -39,6 +41,9 @@
 #include "board_config.h"
 #include "arm_internal.h"
 #include "mpu.h"
+#include "mx8mp_ccm.h"
+#include "mx8mp_clockconfig.h"
+#include "hardware/mx8mp_ccm.h"
 
 #ifdef CONFIG_MX8MP_RPMSG
 #include "mx8mp_rptun.h"
@@ -124,9 +129,90 @@ static void frdm_imx8mp_mpu_initialize(void)
 	__asm__ __volatile__("dsb\n\tisb" ::: "memory");
 }
 
+/* GPIO banks are shared with Linux. NuttX's mx8mp up_irqinitialize() runs
+ * mx8mp_gpio_irq_initialize(), which clears GPIO_IMR of all five banks and
+ * enables all ten GPIO bank interrupts on the M7. A GPIO interrupt Linux
+ * enables then also fires on the M7, has no handler there and panics NuttX;
+ * an M7 restart would also wipe Linux's interrupt masks. Save the masks here
+ * (before the IRQ init) and undo both in board_early_initialize(). */
+
+#define FRDM_GPIO_BANKS 5
+#define FRDM_GPIO_IMR(n) (*(volatile uint32_t *)(0x30200000u + 0x10000u * (n) + 0x14u))
+
+static uint32_t g_gpio_imr[FRDM_GPIO_BANKS];
+
+void board_early_initialize(void)
+{
+	for (int irq = MX8MP_IRQ_GPIO1_0_15; irq <= MX8MP_IRQ_GPIO5_16_31; irq++) {
+		up_disable_irq(irq);
+		irq_detach(irq);
+	}
+
+	for (int n = 0; n < FRDM_GPIO_BANKS; n++) {
+		FRDM_GPIO_IMR(n) = g_gpio_imr[n];
+	}
+}
+
+/* Clock gates of the peripherals the M7 touches. Each CCM_CCGR gate has per-domain
+ * request bits; Linux (domain 0) only clears its own [1:0]. Requesting the gate for
+ * the M7's domain 1 ([5:4] = 3, "needed always") keeps it running whatever Linux does.
+ * Without this, an M7 access to a gate Linux switched off (OCOTP is enabled by Linux
+ * only while it reads fuses) never completes and freezes the whole SoC.
+ * The clock roots behind GPT1, WDOG3 and UART4 must also stay on: init-on-array in
+ * the Linux device tree. OCOTP, MU and GPIO run from ipg_root, which is always on. */
+
+/* CCGR index n is at CCM + 0x4000 + 0x10 * n */
+#define CCGR(n) (0x4000 + 0x10 * (n))
+
+static const uint16_t g_m7_ccgr[] = {
+	CCGR(27), CCGR(28), CCGR(29), CCGR(30), /* IOMUX, IPMUX1-3 */
+	CCGR(35), CCGR(49), /* OCRAM, RDC */
+	CCGR(65), CCGR(66), CCGR(67), CCGR(68), /* SIM_M/MAIN/S/WAKEUP: M7 bus while the A53s sleep */
+	CCGR(4), CCGR(60), /* DEBUG, SEC_DEBUG: JTAG */
+	0x4220, /* OCOTP: UUID / GUID */
+	0x4210, /* MU: RPMsg doorbells */
+	0x40b0, 0x40c0, 0x40d0, 0x40e0, 0x40f0, /* GPIO1-5: IMR at IRQ init */
+	0x4100, /* GPT1: HRT */
+	0x4550, /* WDOG3 */
+	0x44c0, /* UART4: console */
+};
+
+static void frdm_imx8mp_claim_clocks(void)
+{
+	for (unsigned i = 0; i < sizeof(g_m7_ccgr) / sizeof(g_m7_ccgr[0]); i++) {
+		REG32(BOARD_CCM_BASE + g_m7_ccgr[i] + 4) = 3u << 4; /* CCGR_SET, domain 1 */
+	}
+}
+
+/****************************************************************************
+ * Name: mx8mp_clockconfig
+ *
+ * Replaces NuttX's arch/arm/src/mx8mp/mx8mp_clockconfig.c: the board links with
+ * -Wl,--wrap=mx8mp_clockconfig (src/CMakeLists.txt). The upstream version comes
+ * from an M7-owns-audio
+ * example: at every M7 start it maps the AUDIOMIX power domain to the M7, powers
+ * it up and reprograms AUDIO_PLL1/2 and the audio bus clocks. Here Linux owns
+ * audio and the HiFi4 DSP and is often already running when the M7 (re)starts;
+ * changing its PLLs/power domain under it brought the A53 side down. Configure
+ * only what belongs to the M7: its own clock root and its domain-1 gate requests
+ * (frdm_imx8mp_claim_clocks()). PLLs, bus roots and power domains stay Linux's.
+ ****************************************************************************/
+
+void __wrap_mx8mp_clockconfig(void);
+void __wrap_mx8mp_clockconfig(void)
+{
+	mx8mp_ccm_gate_pll(SYSTEM_PLL1_CLK, CLK_ALWAYS_NEEDED);
+	mx8mp_ccm_configure_clock(ARM_M7_CLK_ROOT, SYSTEM_PLL1_CLK, 1, 1); /* 800 MHz */
+}
+
 void mx8mp_board_initialize(void)
 {
+	frdm_imx8mp_claim_clocks();
 	frdm_imx8mp_mpu_initialize();
+
+	for (int n = 0; n < FRDM_GPIO_BANKS; n++) {
+		g_gpio_imr[n] = FRDM_GPIO_IMR(n);
+	}
 
 	/* Started by bbz-m7-boot? It leaves WDOG3 running (WDE is write-once) with its
 	 * own short timeout. Refresh it and widen the timeout so NuttX start-up and

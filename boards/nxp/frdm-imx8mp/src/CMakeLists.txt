@@ -15,3 +15,6 @@ target_link_libraries(drivers_board
 		nuttx_drivers
 		px4_layer
 )
+
+# Board replaces NuttX's audio-oriented mx8mp_clockconfig() (see init.c)
+target_link_libraries(drivers_board INTERFACE -Wl,--wrap=mx8mp_clockconfig)
